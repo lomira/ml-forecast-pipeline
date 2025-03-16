@@ -1,21 +1,7 @@
 import pytest
 import pandas as pd
+from tests.data_import.test_utils import test_csv
 from src.data_import.import_y import import_y
-
-
-@pytest.fixture
-def test_csv(tmp_path):
-    """
-    Creates a temporary CSV file from the provided data string.
-    Returns a callable that accepts the CSV data and writes it to a file.
-    """
-
-    def _write_csv(data: str):
-        csv_file = tmp_path / "temp.csv"
-        csv_file.write_text(data)
-        return csv_file
-
-    return _write_csv
 
 
 def test_valid_import(test_csv):

@@ -24,20 +24,6 @@ def get_file_path(city_name) -> str:
     )
 
 
-def load_existing_data(city) -> Union[pd.DataFrame, None]:
-    """
-    Check if we already have data for this city.
-    Returns the data if available, otherwise None.
-    """
-    filepath = get_file_path(city["name"])
-
-    if os.path.exists(filepath):
-        print(f"Loading data for {city['name']} from {filepath}")
-        return pd.read_csv(filepath, parse_dates=["date"])
-    else:
-        return None
-
-
 def get_missing_date_ranges(
     available_start,
     available_end,
@@ -94,126 +80,99 @@ def get_dates_to_fetch(
     )
 
 
-## Following code is WIP basically copy pasted from Open Meteo Docs
-def fetch_weather_data(cities, start_date, end_date, hourly_variables, timezone):
+def fetch_weather_city_from_api(
+    city: dict,
+    date_range: List[str],
+    hourly_variables: List[str],
+    timezone: str,
+):
     """Fetch weather data from Open-Meteo API."""
     openmeteo = setup_openmeteo_client()
-
-    # Extract coordinates
-    latitudes = [city["latitude"] for city in cities]
-    longitudes = [city["longitude"] for city in cities]
-
-    # Prepare API request
     url = "https://historical-forecast-api.open-meteo.com/v1/forecast"
     params = {
-        "latitude": latitudes,
-        "longitude": longitudes,
-        "start_date": start_date,
-        "end_date": end_date,
+        "latitude": city["latitude"],
+        "longitude": city["longitude"],
+        "start_date": date_range[0],
+        "end_date": date_range[1],
         "hourly": hourly_variables,
         "timezone": timezone,
     }
 
-    # Make API request
+    # Get weather data from the API
     responses = openmeteo.weather_api(url, params=params)
+    response = responses[0]
+    hourly = response.Hourly()
 
-    # Process responses
-    results = {}
+    # Initialize data dictionary with dates
+    range_start = pd.to_datetime(date_range[0])
+    # Add 23 hours as range is in days and we need until 23:00
+    range_end = pd.to_datetime(date_range[1]) + timedelta(hours=23)
+    # hourly_data = {"date": date_range.tz_convert(timezone)}
+    date_range_all = pd.date_range(start=range_start, end=range_end, freq="h")
+    hourly_data = {"date": date_range_all}
 
-    for i, response in enumerate(responses):
-        city_name = cities[i]["name"]
-        hourly = response.Hourly()
+    # Parse the response
+    for j, variable in enumerate(hourly_variables):
+        hourly_data[variable] = hourly.Variables(j).ValuesAsNumpy()
 
-        # Create date range
-        date_range = pd.date_range(
-            start=pd.to_datetime(hourly.Time(), unit="s", utc=True),
-            end=pd.to_datetime(hourly.TimeEnd(), unit="s", utc=True),
-            freq=pd.Timedelta(seconds=hourly.Interval()),
-            inclusive="left",
-        )
-
-        # Convert to specified timezone if not 'auto'
-        if timezone != "auto":
-            date_range = date_range.tz_convert(timezone)
-
-        # Initialize data dictionary with dates
-        hourly_data = {"date": date_range}
-
-        # Add all requested variables
-        for j, variable in enumerate(hourly_variables):
-            hourly_data[variable] = hourly.Variables(j).ValuesAsNumpy()
-
-        # Add metadata
-        hourly_data["city"] = city_name
-        hourly_data["latitude"] = response.Latitude()
-        hourly_data["longitude"] = response.Longitude()
-
-        # Create DataFrame
-        df = pd.DataFrame(data=hourly_data)
-        results[city_name] = df
-
-        # Save to file
-        save_path = get_file_path(city_name, start_date, end_date)
-        df.to_csv(save_path, index=False)
-        print(f"Saved new data for {city_name} to {save_path}")
-
-    return results
+    # Add metadata
+    hourly_data["city"] = city["name"]
+    # Create DataFrame
+    return pd.DataFrame(data=hourly_data)
 
 
-def get_weather_data(
-    cities, start_date, end_date, hourly_variables=["temperature_2m"], timezone="auto"
-):
+def load_existing_data(city) -> Union[pd.DataFrame, None]:
+    """
+    Check if we already have data for this city.
+    Returns the data if available, otherwise None.
+    """
+    filepath = get_file_path(city["name"])
+
+    if os.path.exists(filepath):
+        print(f"Loading data for {city['name']} from {filepath}")
+        return pd.read_csv(filepath, parse_dates=["date"])
+    else:
+        return None
+
+
+def get_weather_data_city(
+    city: dict,
+    start_date: str,
+    end_date: str,
+    hourly_variables: List[str],
+    timezone: str,
+) -> pd.DataFrame:
     """
     Get historical weather data, using local storage when available and fetching from API only when needed.
 
     Args:
-        cities: List of dictionaries, each with 'name', 'latitude', and 'longitude'
-        start_date: Start date in 'YYYY-MM-DD' format
-        end_date: End date in 'YYYY-MM-DD' format
+        city: Dictionaries, each with 'name', 'latitude', and 'longitude'
+        start_date: Start date in 'YYYY-MM-DD' format,
+        end_date: End date in 'YYYY-MM-DD' format)
         hourly_variables: List of hourly weather variables to fetch
         timezone: Timezone for the data
 
     Returns:
         Dictionary mapping city names to pandas DataFrames with weather data
     """
-    results = {}
-    cities_to_fetch = []
 
     # Check for existing data for each city
-    for city in cities:
-        existing_data = load_existing_data(city, start_date, end_date)
+    existing_data = load_existing_data(city)
+    fetching_dates = get_dates_to_fetch(existing_data, start_date, end_date)
 
-        if existing_data is not None:
-            # Check if we have all requested variables
-            missing_variables = [
-                var for var in hourly_variables if var not in existing_data.columns
-            ]
+    if fetching_dates is None:
+        # No new dates to fetch
+        # TODO : Check if we have all requested variables
+        return existing_data
 
-            # Check if date range is complete
-            date_range = pd.date_range(start=start_date, end=end_date, freq="H")
-            has_complete_dates = len(date_range) == len(existing_data)
-
-            if not missing_variables and has_complete_dates:
-                print(f"Using existing data for {city['name']}")
-                results[city["name"]] = existing_data
-            else:
-                print(
-                    f"Existing data for {city['name']} is incomplete or missing variables {missing_variables}"
-                )
-                cities_to_fetch.append(city)
-        else:
-            print(f"No existing data found for {city['name']}")
-            cities_to_fetch.append(city)
-
-    # Fetch data for cities that need it
-    if cities_to_fetch:
-        print(f"Fetching data for {len(cities_to_fetch)} cities from API")
-        new_data = fetch_weather_data(
-            cities_to_fetch, start_date, end_date, hourly_variables, timezone
+    # Fetch data for each date range
+    for date_range in fetching_dates:
+        new_data = fetch_weather_city_from_api(
+            city, date_range, hourly_variables, timezone
         )
-        results.update(new_data)
+        existing_data = pd.concat([existing_data, new_data])
 
-    return results
+    return existing_data.sort_values("date")
 
 
 # Juste to test the function
@@ -226,10 +185,11 @@ if __name__ == "__main__":
 
     hourly_vars = ["temperature_2m", "relative_humidity_2m", "precipitation"]
 
-    weather_data = get_weather_data(
-        cities=cities,
+    weather_data = get_weather_data_city(
+        city=cities[0],
         start_date="2024-01-01",
         end_date="2024-01-07",
         hourly_variables=hourly_vars,
         timezone="Africa/Tunis",
     )
+    print(weather_data.head())
