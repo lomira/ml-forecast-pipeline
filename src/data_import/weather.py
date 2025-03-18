@@ -4,7 +4,7 @@ import pandas as pd
 import os
 from retry_requests import retry
 from typing import List, Tuple, Union
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 
 def setup_openmeteo_client():
@@ -118,6 +118,7 @@ def fetch_weather_city_from_api(
     # Add metadata
     hourly_data["city"] = city["name"]
     # Create DataFrame
+    print(f"dedededede,{hourly_data}")
     return pd.DataFrame(data=hourly_data)
 
 
