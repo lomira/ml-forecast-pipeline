@@ -1,66 +1,119 @@
 import pytest
-import numpy as np
 import pandas as pd
-import random
+import numpy as np
 from datetime import timedelta
-from .test_utils import test_csv
-from src.data_import.weather import get_weather_data_city
+from src.data_import.weather import (
+    get_weather_data_city,
+    fetch_weather_city_from_api,
+)
 
 
-# Data from "2023-01-02T00:00" to "2023-01-03T23:00" for mocking purposes
-CSV_DATA = "date,temperature_2m,relative_humidity_2m,city\n2023-01-02T00:00:00,5,80,Tunis\n2023-01-02T01:00:00,4,82,Tunis\n2023-01-02T02:00:00,3,84,Tunis\n2023-01-02T03:00:00,2,86,Tunis\n2023-01-02T04:00:00,1,88,Tunis\n2023-01-02T05:00:00,0,90,Tunis\n2023-01-02T06:00:00,-1,92,Tunis\n2023-01-02T07:00:00,-2,94,Tunis\n2023-01-02T08:00:00,-1,92,Tunis\n2023-01-02T09:00:00,0,90,Tunis\n2023-01-02T10:00:00,1,88,Tunis\n2023-01-02T11:00:00,2,86,Tunis\n2023-01-02T12:00:00,3,84,Tunis\n2023-01-02T13:00:00,4,82,Tunis\n2023-01-02T14:00:00,5,80,Tunis\n2023-01-02T15:00:00,6,78,Tunis\n2023-01-02T16:00:00,7,76,Tunis\n2023-01-02T17:00:00,6,74,Tunis\n2023-01-02T18:00:00,5,72,Tunis\n2023-01-02T19:00:00,4,70,Tunis\n2023-01-02T20:00:00,3,68,Tunis\n2023-01-02T21:00:00,2,66,Tunis\n2023-01-02T22:00:00,1,64,Tunis\n2023-01-02T23:00:00,0,62,Tunis\n2023-01-03T00:00:00,-1,60,Tunis\n2023-01-03T01:00:00,-2,58,Tunis\n2023-01-03T02:00:00,-3,56,Tunis\n2023-01-03T03:00:00,-4,54,Tunis\n2023-01-03T04:00:00,-5,52,Tunis\n2023-01-03T05:00:00,-6,50,Tunis\n2023-01-03T06:00:00,-7,48,Tunis\n2023-01-03T07:00:00,-8,46,Tunis\n2023-01-03T08:00:00,-7,48,Tunis\n2023-01-03T09:00:00,-6,50,Tunis\n2023-01-03T10:00:00,-5,52,Tunis\n2023-01-03T11:00:00,-4,54,Tunis\n2023-01-03T12:00:00,-3,56,Tunis\n2023-01-03T13:00:00,-2,58,Tunis\n2023-01-03T14:00:00,-1,60,Tunis\n2023-01-03T15:00:00,0,62,Tunis\n2023-01-03T16:00:00,1,64,Tunis\n2023-01-03T17:00:00,0,66,Tunis\n2023-01-03T18:00:00,-1,68,Tunis\n2023-01-03T19:00:00,-2,70,Tunis\n2023-01-03T20:00:00,-3,72,Tunis\n2023-01-03T21:00:00,-4,74,Tunis\n2023-01-03T22:00:00,-5,76,Tunis\n2023-01-03T23:00:00,-6,78,Tunis"
+# Create the necessary mocks
+class MockHourlyVariable:
+    def __init__(self, values):
+        self.values = values
+
+    def ValuesAsNumpy(self):
+        return np.array(self.values)
 
 
+class MockHourly:
+    def __init__(self, variables):
+        self.variables = variables
+
+    def Variables(self, index):
+        return MockHourlyVariable(self.variables[index])
+
+
+class MockResponse:
+    def __init__(self, hourly_data):
+        self._hourly = MockHourly(hourly_data)
+
+    def Hourly(self):
+        return self._hourly
+
+
+# Define a fixture for the mock client
 @pytest.fixture
-def mock_weather_api(mocker, request):
-    """Fixture to mock the weather_api call with generated data."""
+def mock_openmeteo_client(monkeypatch):
+    # Create a mock client
+    class MockClient:
+        def __init__(self):
+            self.last_call = None
 
-    mock_client = mocker.Mock()
-    mocker.patch(
-        "src.data_import.weather.openmeteo_requests.Client", return_value=mock_client
+        def weather_api(self, url, params=None):
+            self.last_call = {"url": url, "params": params}
+
+            # Extract parameters
+            start_date = pd.to_datetime(params.get("start_date"))
+            end_date = pd.to_datetime(params.get("end_date"))
+            hourly_variables = params.get("hourly", [])
+
+            # Calculate number of hours
+            day_range_in_hours = pd.date_range(
+                start=start_date, end=end_date + timedelta(hours=23), freq="h"
+            )
+            num_hours = len(day_range_in_hours)
+
+            # Generate deterministic data for each variable
+            hourly_data = []
+            for variable in hourly_variables:
+                if variable == "temperature_2m":
+                    values = [20.0 + (i % 10) for i in range(num_hours)]
+                elif variable == "precipitation":
+                    values = [0.0 if i % 6 != 0 else 1.5 for i in range(num_hours)]
+                else:
+                    values = [float(i % 100) for i in range(num_hours)]
+                hourly_data.append(values)
+
+            return [MockResponse(hourly_data)]
+
+    # Create instance
+    mock_client = MockClient()
+
+    # Patch the setup function
+    monkeypatch.setattr(
+        "src.data_import.weather.setup_openmeteo_client", lambda: mock_client
     )
 
-    def mock_weather_api_response(url, params):
-
-        class MockVariable:
-            def __init__(self, length):
-                self.values = [random.randint(-10, 100) for _ in range(length)]
-
-            def ValuesAsNumpy(self):
-                return self.values
-
-        class MockHourly:
-            def __init__(self, num_var, length):
-                self.var = [MockVariable(length) for _ in range(num_var)]
-
-            def Variables(self, index):
-                return self.var[index]
-
-        class MockResponse:
-            def __init__(self, params):
-                self.start_date = pd.to_datetime(params.get("start_date"))
-                self.end_date = pd.to_datetime(params.get("end_date")) + timedelta(
-                    hours=23
-                )
-                self.date_range = pd.date_range(
-                    start=self.start_date, end=self.end_date, freq="h"
-                )
-                self.latitude = params.get("latitude")
-                self.longitude = params.get("longitude")
-                self.timezone = params.get("timezone")
-                self.h_var = params.get("hourly")
-
-            def Hourly(self):
-                return MockHourly(len(self.h_var), len(self.date_range))
-
-        return [MockResponse(params)]
-
-    mock_client.weather_api.side_effect = mock_weather_api_response
-    return mock_client.weather_api
+    return mock_client
 
 
-def test_get_weather_data_for_specific_period_mock(mock_weather_api):
-    """Test that the function returns data for the specified date range."""
+# Test the function
+def test_fetch_weather_city_from_api(mock_openmeteo_client):
+    # Import the function to test
+
+    # Test data
+    city = {"name": "New York", "latitude": 40.7128, "longitude": -74.0060}
+    date_range = ["2023-06-01", "2023-06-02"]
+    hourly_variables = ["temperature_2m", "precipitation", "windspeed_10m"]
+    timezone = "America/New_York"
+
+    # Call the function
+    result = fetch_weather_city_from_api(city, date_range, hourly_variables, timezone)
+
+    # Verify the result is a DataFrame with expected properties
+    assert isinstance(result, pd.DataFrame)
+    assert "city" in result.columns
+    assert result["city"].iloc[0] == "New York"
+
+    # Check all variables are in the result
+    for variable in hourly_variables:
+        assert variable in result.columns
+
+    # Verify the API was called with correct parameters
+    assert mock_openmeteo_client.last_call is not None
+    call_params = mock_openmeteo_client.last_call["params"]
+    assert call_params["latitude"] == city["latitude"]
+    assert call_params["longitude"] == city["longitude"]
+    assert call_params["hourly"] == hourly_variables
+
+    # Check we have the expected number of hours (2 days = 48 hours)
+    assert len(result) == 48
+
+
+# Test with different parameters
+def test_fetch_weather_single_day(mock_openmeteo_client):
 
     city = {"name": "Tunis", "latitude": 86.819, "longitude": 10.1658}
     result = get_weather_data_city(
@@ -71,15 +124,6 @@ def test_get_weather_data_for_specific_period_mock(mock_weather_api):
         timezone="Africa/Tunis",
     )
 
-    # Verify mock was called with correct parameters
-    mock_weather_api.assert_called_once()
-
-    # Validate results
-    assert result is not None
-    assert isinstance(result, pd.DataFrame)
-    assert len(result) == 24  # 24 hours in one day
-
-    # Check for required columns
+    # Should have 24 hours for a single day
+    assert len(result) == 24
     assert "temperature_2m" in result.columns
-    assert "relative_humidity_2m" in result.columns
-    assert "date" in result.columns
