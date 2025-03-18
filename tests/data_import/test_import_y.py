@@ -1,6 +1,6 @@
 import pytest
 import pandas as pd
-from tests.data_import.test_utils import test_csv
+from tests.data_import.utils import test_csv
 from src.data_import.import_y import import_y
 
 

@@ -118,7 +118,6 @@ def fetch_weather_city_from_api(
     # Add metadata
     hourly_data["city"] = city["name"]
     # Create DataFrame
-    print(f"dedededede,{hourly_data}")
     return pd.DataFrame(data=hourly_data)
 
 

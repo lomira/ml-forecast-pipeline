@@ -1,129 +1,267 @@
-import pytest
+import re
 import pandas as pd
-import numpy as np
-from datetime import timedelta
-from src.data_import.weather import (
-    get_weather_data_city,
-    fetch_weather_city_from_api,
-)
+from tests.data_import.utils import mock_openmeteo_client
+from src.data_import.weather import get_weather_data_city
 
 
-# Create the necessary mocks
-class MockHourlyVariable:
-    def __init__(self, values):
-        self.values = values
-
-    def ValuesAsNumpy(self):
-        return np.array(self.values)
-
-
-class MockHourly:
-    def __init__(self, variables):
-        self.variables = variables
-
-    def Variables(self, index):
-        return MockHourlyVariable(self.variables[index])
-
-
-class MockResponse:
-    def __init__(self, hourly_data):
-        self._hourly = MockHourly(hourly_data)
-
-    def Hourly(self):
-        return self._hourly
-
-
-# Define a fixture for the mock client
-@pytest.fixture
-def mock_openmeteo_client(monkeypatch):
-    # Create a mock client
-    class MockClient:
-        def __init__(self):
-            self.last_call = None
-
-        def weather_api(self, url, params=None):
-            self.last_call = {"url": url, "params": params}
-
-            # Extract parameters
-            start_date = pd.to_datetime(params.get("start_date"))
-            end_date = pd.to_datetime(params.get("end_date"))
-            hourly_variables = params.get("hourly", [])
-
-            # Calculate number of hours
-            day_range_in_hours = pd.date_range(
-                start=start_date, end=end_date + timedelta(hours=23), freq="h"
-            )
-            num_hours = len(day_range_in_hours)
-
-            # Generate deterministic data for each variable
-            hourly_data = []
-            for variable in hourly_variables:
-                if variable == "temperature_2m":
-                    values = [20.0 + (i % 10) for i in range(num_hours)]
-                elif variable == "precipitation":
-                    values = [0.0 if i % 6 != 0 else 1.5 for i in range(num_hours)]
-                else:
-                    values = [float(i % 100) for i in range(num_hours)]
-                hourly_data.append(values)
-
-            return [MockResponse(hourly_data)]
-
-    # Create instance
-    mock_client = MockClient()
-
-    # Patch the setup function
-    monkeypatch.setattr(
-        "src.data_import.weather.setup_openmeteo_client", lambda: mock_client
+# Test with out existing data
+def test_get_weather_single_day_no_existing_data(mock_openmeteo_client):
+    city = {"name": "Tunis", "latitude": 86.819, "longitude": 10.1658}
+    hourly_variables = ["temperature_2m", "relative_humidity_2m"]
+    result = get_weather_data_city(
+        city,
+        start_date="2023-01-01",
+        end_date="2023-01-01",
+        hourly_variables=hourly_variables,
+        timezone="Africa/Tunis",
     )
 
-    return mock_client
+    assert mock_openmeteo_client.last_call is not None
+    assert isinstance(result, pd.DataFrame)
+    assert "city" in result.columns
+    assert result["city"].iloc[0] == "Tunis"
+    assert "temperature_2m" in result.columns
+    assert len(result) == 24  # Should have 24 hours for a single day
 
 
-# Test the function
-def test_fetch_weather_city_from_api(mock_openmeteo_client):
-    # Import the function to test
-
-    # Test data
-    city = {"name": "New York", "latitude": 40.7128, "longitude": -74.0060}
-    date_range = ["2023-06-01", "2023-06-02"]
-    hourly_variables = ["temperature_2m", "precipitation", "windspeed_10m"]
-    timezone = "America/New_York"
-
-    # Call the function
-    result = fetch_weather_city_from_api(city, date_range, hourly_variables, timezone)
+def test_get_weather_single_week_no_existing_data(mock_openmeteo_client):
+    city = {"name": "Tunis", "latitude": 86.819, "longitude": 10.1658}
+    hourly_variables = ["temperature_2m", "relative_humidity_2m"]
+    result = get_weather_data_city(
+        city,
+        start_date="2022-01-01",
+        end_date="2022-01-07",
+        hourly_variables=hourly_variables,
+        timezone="Africa/Tunis",
+    )
 
     # Verify the result is a DataFrame with expected properties
     assert isinstance(result, pd.DataFrame)
     assert "city" in result.columns
-    assert result["city"].iloc[0] == "New York"
+    assert result["city"].iloc[0] == "Tunis"
 
     # Check all variables are in the result
     for variable in hourly_variables:
         assert variable in result.columns
 
-    # Verify the API was called with correct parameters
+    # Verify the API was called
     assert mock_openmeteo_client.last_call is not None
-    call_params = mock_openmeteo_client.last_call["params"]
-    assert call_params["latitude"] == city["latitude"]
-    assert call_params["longitude"] == city["longitude"]
-    assert call_params["hourly"] == hourly_variables
-
-    # Check we have the expected number of hours (2 days = 48 hours)
-    assert len(result) == 48
+    assert isinstance(result, pd.DataFrame)
+    assert "city" in result.columns
+    assert result["city"].iloc[0] == "Tunis"
+    assert "temperature_2m" in result.columns
+    assert len(result) == 24 * 7  # Should have 24 hours for a single day
 
 
-# Test with different parameters
-def test_fetch_weather_single_day(mock_openmeteo_client):
-
+# Test with existing data
+def test_get_weather_extensive_existing_data(mock_openmeteo_client, mocker):
     city = {"name": "Tunis", "latitude": 86.819, "longitude": 10.1658}
+    hourly_variables = ["temperature_2m", "relative_humidity_2m"]
+
+    existing_dates = pd.date_range(start="2023-01-01", end="2023-01-03", freq="h")
+    existing_data = pd.DataFrame(
+        {
+            "date": existing_dates,
+            "temperature_2m": [20] * len(existing_dates),
+            "relative_humidity_2m": [50] * len(existing_dates),
+            "city": city["name"],
+        }
+    )
+
+    # Mock load_existing_data to return our existing data
+    mocker.patch(
+        "src.data_import.weather.load_existing_data", return_value=existing_data
+    )
+
     result = get_weather_data_city(
         city,
         start_date="2023-01-01",
         end_date="2023-01-01",
-        hourly_variables=["temperature_2m", "relative_humidity_2m"],
+        hourly_variables=hourly_variables,
         timezone="Africa/Tunis",
     )
 
-    # Should have 24 hours for a single day
-    assert len(result) == 24
+    assert mock_openmeteo_client.last_call is None
+    assert isinstance(result, pd.DataFrame)
+    assert "city" in result.columns
+    assert result["city"].iloc[0] == "Tunis"
     assert "temperature_2m" in result.columns
+    assert len(result) == len(existing_dates)  # Should have the same as the database
+
+
+def test_get_weather_exact_existing_data(mock_openmeteo_client, mocker):
+    city = {"name": "Tunis", "latitude": 86.819, "longitude": 10.1658}
+    hourly_variables = ["temperature_2m", "relative_humidity_2m"]
+
+    existing_dates = pd.date_range(start="2023-01-01", end="2023-01-03", freq="h")
+    existing_data = pd.DataFrame(
+        {
+            "date": existing_dates,
+            "temperature_2m": [20] * len(existing_dates),
+            "relative_humidity_2m": [50] * len(existing_dates),
+            "city": city["name"],
+        }
+    )
+
+    # Mock load_existing_data to return our existing data
+    mocker.patch(
+        "src.data_import.weather.load_existing_data", return_value=existing_data
+    )
+
+    result = get_weather_data_city(
+        city,
+        start_date="2023-01-01",
+        end_date="2023-01-03",
+        hourly_variables=hourly_variables,
+        timezone="Africa/Tunis",
+    )
+
+    assert mock_openmeteo_client.last_call is None
+    assert isinstance(result, pd.DataFrame)
+    assert "city" in result.columns
+    assert result["city"].iloc[0] == "Tunis"
+    assert "temperature_2m" in result.columns
+    assert len(result) == len(existing_dates)  # Should have the same as the database
+
+
+def test_get_weather_partial_same_start_existing_data(mock_openmeteo_client, mocker):
+    city = {"name": "Tunis", "latitude": 86.819, "longitude": 10.1658}
+    hourly_variables = ["temperature_2m", "relative_humidity_2m"]
+
+    existing_date_start = "2023-01-01"
+    existing_dates_end = "2023-01-03"
+    existing_dates = pd.date_range(
+        start=existing_date_start, end=existing_dates_end, freq="h"
+    )
+    existing_data = pd.DataFrame(
+        {
+            "date": existing_dates,
+            "temperature_2m": [20] * len(existing_dates),
+            "relative_humidity_2m": [50] * len(existing_dates),
+            "city": city["name"],
+        }
+    )
+
+    # Mock load_existing_data to return our existing data
+    mocker.patch(
+        "src.data_import.weather.load_existing_data", return_value=existing_data
+    )
+
+    query_start_date = "2023-01-01"
+    query_end_date = "2023-01-07"
+    query_range = pd.date_range(start=query_start_date, end=query_end_date, freq="h")
+
+    result = get_weather_data_city(
+        city,
+        start_date=query_start_date,
+        end_date=query_end_date,
+        hourly_variables=hourly_variables,
+        timezone="Africa/Tunis",
+    )
+
+    # API Call
+    assert mock_openmeteo_client.last_call is not None
+    call_params = mock_openmeteo_client.last_call["params"]
+    assert call_params["start_date"] == "2023-01-04"
+    assert call_params["end_date"] == max(existing_dates_end, query_end_date)
+
+    # Result
+    assert isinstance(result, pd.DataFrame)
+    assert "city" in result.columns
+    assert result["city"].iloc[0] == "Tunis"
+    assert "temperature_2m" in result.columns
+    assert len(result) == len(query_range)  # Should have the same as the api return
+
+
+def test_get_weather_partial_same_end_existing_data(mock_openmeteo_client, mocker):
+    city = {"name": "Tunis", "latitude": 86.819, "longitude": 10.1658}
+    hourly_variables = ["temperature_2m", "relative_humidity_2m"]
+
+    existing_dates = pd.date_range(start="2023-01-03", end="2023-01-07", freq="h")
+    existing_data = pd.DataFrame(
+        {
+            "date": existing_dates,
+            "temperature_2m": [20] * len(existing_dates),
+            "relative_humidity_2m": [50] * len(existing_dates),
+            "city": city["name"],
+        }
+    )
+
+    # Mock load_existing_data to return our existing data
+    mocker.patch(
+        "src.data_import.weather.load_existing_data", return_value=existing_data
+    )
+
+    query_start_date = "2023-01-01"
+    query_end_date = "2023-01-07"
+    query_range = pd.date_range(start=query_start_date, end=query_end_date, freq="h")
+
+    result = get_weather_data_city(
+        city,
+        start_date=query_start_date,
+        end_date=query_end_date,
+        hourly_variables=hourly_variables,
+        timezone="Africa/Tunis",
+    )
+
+    # API Call
+    assert mock_openmeteo_client.last_call is not None
+    call_params = mock_openmeteo_client.last_call["params"]
+    assert call_params["start_date"] == "2023-01-01"
+    assert call_params["end_date"] == "2023-01-02"
+
+    # Results
+    assert isinstance(result, pd.DataFrame)
+    assert "city" in result.columns
+    assert result["city"].iloc[0] == "Tunis"
+    assert "temperature_2m" in result.columns
+    assert len(result) == len(query_range)  # Should have the same as the api return
+
+
+def test_get_weather_partial_before_after_existing_data(mock_openmeteo_client, mocker):
+    city = {"name": "Tunis", "latitude": 86.819, "longitude": 10.1658}
+    hourly_variables = ["temperature_2m", "relative_humidity_2m"]
+
+    existing_dates = pd.date_range(start="2023-01-03", end="2023-01-05", freq="h")
+    existing_data = pd.DataFrame(
+        {
+            "date": existing_dates,
+            "temperature_2m": [20] * len(existing_dates),
+            "relative_humidity_2m": [50] * len(existing_dates),
+            "city": city["name"],
+        }
+    )
+
+    # Mock load_existing_data to return our existing data
+    mocker.patch(
+        "src.data_import.weather.load_existing_data", return_value=existing_data
+    )
+
+    query_start_date = "2023-01-01"
+    query_end_date = "2023-01-07"
+    query_range = pd.date_range(start=query_start_date, end=query_end_date, freq="h")
+
+    result = get_weather_data_city(
+        city,
+        start_date=query_start_date,
+        end_date=query_end_date,
+        hourly_variables=hourly_variables,
+        timezone="Africa/Tunis",
+    )
+
+    # API Call
+    assert mock_openmeteo_client.last_call is not None
+    first_call_params = mock_openmeteo_client.first_call["params"]
+    assert first_call_params["start_date"] == "2023-01-01"
+    assert first_call_params["end_date"] == "2023-01-02"
+
+    last_call_params = mock_openmeteo_client.last_call["params"]
+    assert last_call_params["start_date"] == "2023-01-06"
+    assert last_call_params["end_date"] == "2023-01-07"
+
+    # Results
+    assert isinstance(result, pd.DataFrame)
+    assert "city" in result.columns
+    assert result["city"].iloc[0] == "Tunis"
+    assert "temperature_2m" in result.columns
+    assert len(result) == len(query_range)
