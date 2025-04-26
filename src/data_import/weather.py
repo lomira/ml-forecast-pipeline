@@ -5,6 +5,7 @@ import os
 from retry_requests import retry
 from typing import List, Tuple, Union
 from datetime import timedelta
+from pandas.errors import EmptyDataError, ParserError  # Import specific pandas errors
 
 
 def setup_openmeteo_client():
@@ -125,12 +126,27 @@ def load_existing_data(city) -> Union[pd.DataFrame, None]:
     """
     Check if we already have data for this city.
     Returns the data if available, otherwise None.
+    Handles potential file read errors.
     """
     filepath = get_file_path(city["name"])
 
     if os.path.exists(filepath):
-        print(f"Loading data for {city['name']} from {filepath}")
-        return pd.read_csv(filepath, parse_dates=["date"])
+        try:
+            print(f"Loading data for {city['name']} from {filepath}")
+            df = pd.read_csv(filepath, parse_dates=["date"])
+            # Check if dataframe is empty after loading
+            if df.empty:
+                print(f"Warning: File {filepath} is empty.")
+                return None
+            return df
+        except (EmptyDataError, ParserError) as e:
+            print(f"Error reading {filepath}: {e}. Treating as no existing data.")
+            return None
+        except Exception as e:  # Catch other potential read errors
+            print(
+                f"Unexpected error reading {filepath}: {e}. Treating as no existing data."
+            )
+            return None
     else:
         return None
 
@@ -160,19 +176,69 @@ def get_weather_data_city(
     existing_data = load_existing_data(city)
     fetching_dates = get_dates_to_fetch(existing_data, start_date, end_date)
 
-    if fetching_dates is None:
-        # No new dates to fetch
-        # TODO : Check if we have all requested variables
-        return existing_data
+    if not fetching_dates:
+        # No new dates to fetch based on date range alone
+        # Check if all requested variables (columns) are present in the existing data
+        if existing_data is not None:
+            missing_columns = [
+                col for col in hourly_variables if col not in existing_data.columns
+            ]
+            if not missing_columns:
+                # All dates and columns are present
+                print(
+                    f"Data for {city['name']} ({start_date} to {end_date}) with requested columns already available locally."
+                )
+                return existing_data
+            else:
+                # Dates are covered, but columns are missing. Re-fetch the entire range.
+                print(
+                    f"Missing columns {missing_columns} in existing data for {city['name']}. Re-fetching full range {start_date} to {end_date}."
+                )
+                fetching_dates = [(start_date, end_date)]
+                # Discard incomplete existing data as we are re-fetching everything
+                existing_data = None
+        else:
+            # This case implies load_existing_data returned None, and get_dates_to_fetch
+            # might have returned an empty list if start/end dates were within a non-existent range (shouldn't happen with current logic but handle defensively).
+            # If existing_data is None, we must fetch the full range.
+            fetching_dates = [(start_date, end_date)]
 
-    # Fetch data for each date range
+    # If we reach here, either fetching_dates was initially non-empty (missing dates),
+    # or it was set because columns were missing or existing_data was None.
+
+    # Fetch data for each required date range
+    all_new_data = []  # Collect new data chunks here
+    print(f"Fetching data for {city['name']} for date ranges: {fetching_dates}")
     for date_range in fetching_dates:
-        new_data = fetch_weather_city_from_api(
+        new_data_chunk = fetch_weather_city_from_api(
             city, date_range, hourly_variables, timezone
         )
-        existing_data = pd.concat([existing_data, new_data])
+        all_new_data.append(new_data_chunk)
 
-    return existing_data.sort_values("date")
+    # Combine potentially existing data (if columns were initially okay but dates were missing)
+    # with all newly fetched data.
+    # If columns were missing, existing_data was set to None earlier.
+    if not all_new_data:
+        # This should only happen if fetching_dates was empty and existing_data was sufficient
+        # which is handled by the return statement earlier. Added for safety.
+        final_data = existing_data
+    else:
+        final_data = pd.concat([existing_data] + all_new_data, ignore_index=True)
+
+        # Sort and remove potential duplicates introduced by concatenation or overlap
+        final_data = final_data.sort_values("date").drop_duplicates(
+            subset=["date"], keep="last"
+        )
+
+        # Save the updated/combined data back to the file
+        filepath = get_file_path(city["name"])
+        try:
+            final_data.to_csv(filepath, index=False)
+            print(f"Saved updated data for {city['name']} to {filepath}")
+        except Exception as e:
+            print(f"Error saving data for {city['name']} to {filepath}: {e}")
+
+    return final_data
 
 
 # Juste to test the function
