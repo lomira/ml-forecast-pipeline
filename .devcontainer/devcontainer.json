@@ -1,0 +1,33 @@
+{
+  "name": "Python 3 with DVC and UV",
+  "image": "mcr.microsoft.com/vscode/devcontainers/base:ubuntu-22.04",
+  "customizations": {
+    // Configure properties specific to VS Code.
+    "vscode": {
+      // Add the IDs of extensions you want installed when the container is created.
+      "extensions": [
+        "iterative.dvc", // DVC extension
+        "ms-python.python",
+        "ms-python.vscode-pylance"
+      ]
+    },
+    "settings": {
+      // Tell pytest where to find tests
+      "python.testing.pytestArgs": ["./tests"],
+      "python.testing.unittestEnabled": false, // Disable unittest discovery if you only use pytest
+      "python.testing.pytestEnabled": true // Ensure pytest is enabled
+    }
+  },
+  "features": {
+    "ghcr.io/va-h/devcontainers-features/uv:1": {},
+    "ghcr.io/iterative/features/dvc:1": {}
+  },
+  "containerEnv": {
+    "PYTHONUNBUFFERED": "True",
+    "UV_LINK_MODE": "copy",
+    "UV_PROJECT_ENVIRONMENT": ".venv"
+  },
+
+  // Use 'postCreateCommand' to run commands after the container is created.
+  "postCreateCommand": "uv venv .venv --python 3.13 && uv sync --frozen"
+}
