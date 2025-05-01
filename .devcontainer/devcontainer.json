@@ -1,6 +1,6 @@
 {
   "name": "PyTorch CUDA Dev Container",
-  "image": "pytorch/pytorch:2.7.0-cuda12.6-cudnn9-runtime",
+  "image": "python:3.13.3-bullseye",
 
   "customizations": {
     "vscode": {
@@ -28,7 +28,8 @@
   },
 
   "containerEnv": {
-    "PYTHONUNBUFFERED": "True"
+    "PYTHONUNBUFFERED": "True",
+    "UV_LINK_MODE": "copy" 
   },
 
   // Use 'remoteUser' to connect as a specific user in the container
